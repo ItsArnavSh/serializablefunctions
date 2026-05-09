@@ -1,6 +1,6 @@
 # serializablefunctions
 
-Lets you pack up function calls along with their parameters, marshal them, store them in a database, and run them later — surviving crashes, restarts, and whatever else goes wrong.
+Lets you pack up function calls along with their parameters, marshal them, store them in a database, and run them later. Surviving crashes, restarts, and whatever else goes wrong.
 
 ```go
 // Pack a function call
