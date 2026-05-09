@@ -1,3 +1,3 @@
-module github.com/ItsArnavSh/serializefunctions
+module github.com/ItsArnavSh/serializablefunctions
 
 go 1.26.1

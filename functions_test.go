@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/ItsArnavSh/serializefunctions"
+	serializefunctions "github.com/ItsArnavSh/serializablefunctions"
 )
 
 // ── Shared types ──────────────────────────────────────────────────────────────
