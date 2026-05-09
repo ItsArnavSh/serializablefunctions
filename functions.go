@@ -4,7 +4,7 @@
 // It enables functions to be stored (e.g. in a database or queue) and executed
 // later by name, with automatic JSON marshaling/unmarshaling of parameters.
 // This is useful for job queues, RPC-like systems, or deferred execution.
-package serializefunctions
+package serializablefunctions
 
 import (
 	"encoding/json"

@@ -4,7 +4,7 @@
 // It allows registering Go functions, serializing calls with their parameters
 // as JSON, and executing them later — even after process crashes — using
 // DurableRunner.
-package serializefunctions
+package serializablefunctions
 
 import (
 	"encoding/json"

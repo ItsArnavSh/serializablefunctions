@@ -1,4 +1,4 @@
-package serializefunctions_test
+package serializablefunctions_test
 
 import (
 	"encoding/json"
