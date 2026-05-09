@@ -7,24 +7,24 @@ import (
 	"os"
 	"sync"
 	"time"
-
-	"github.com/robfig/cron/v3"
 )
+
+// ── Status ────────────────────────────────────────────────────────────────────
 
 type FuncStatus string
 
 const (
-	StatusPending   FuncStatus = "pending"
-	StatusRunning   FuncStatus = "running"
-	StatusDone      FuncStatus = "done"
-	StatusFailed    FuncStatus = "failed"
-	StatusScheduled FuncStatus = "scheduled"
+	StatusPending FuncStatus = "pending"
+	StatusRunning FuncStatus = "running"
+	StatusDone    FuncStatus = "done"
+	StatusFailed  FuncStatus = "failed"
 )
+
+// ── Persisted record ──────────────────────────────────────────────────────────
 
 type DurableRecord struct {
 	Func      Function   `json:"func"`
 	Status    FuncStatus `json:"status"`
-	Schedule  string     `json:"schedule,omitempty"` // cron expression, empty = run once
 	AddedAt   time.Time  `json:"added_at"`
 	StartedAt *time.Time `json:"started_at,omitempty"`
 	DoneAt    *time.Time `json:"done_at,omitempty"`
@@ -32,43 +32,37 @@ type DurableRecord struct {
 	CrashLog  string     `json:"crash_log,omitempty"`
 }
 
+// ── DurableRunner ─────────────────────────────────────────────────────────────
+
 type DurableRunner struct {
 	filePath string
 	threads  int
 
 	mu      sync.Mutex
-	records map[int]*DurableRecord // keyed by Function.SaveID
+	records map[int]*DurableRecord
 
 	taskCh chan *DurableRecord
 	wg     sync.WaitGroup
-
-	cron   *cron.Cron
-	stopCh chan struct{}
 }
 
-// NewDurableRunner creates a runner, asks for thread count, loads persisted state.
 func NewDurableRunner(filePath string, threads int) *DurableRunner {
 	dr := &DurableRunner{
 		filePath: filePath,
 		threads:  threads,
 		records:  make(map[int]*DurableRecord),
 		taskCh:   make(chan *DurableRecord, 256),
-		stopCh:   make(chan struct{}),
-		cron:     cron.New(),
 	}
 	dr.load()
 	return dr
 }
 
-// Start launches worker threads and re-queues any pending/failed tasks from last run.
 func (dr *DurableRunner) Start() {
 	for i := 0; i < dr.threads; i++ {
 		dr.wg.Add(1)
 		go dr.worker(i)
 	}
-	dr.cron.Start()
 
-	// Re-queue anything that was pending or running (crashed mid-flight)
+	// Re-queue anything pending or mid-flight when the process last died
 	dr.mu.Lock()
 	for _, rec := range dr.records {
 		if rec.Status == StatusPending || rec.Status == StatusRunning {
@@ -83,17 +77,15 @@ func (dr *DurableRunner) Start() {
 	log.Printf("[DurableRunner] Started with %d threads, file: %s", dr.threads, dr.filePath)
 }
 
-// Stop drains the queue and shuts down workers gracefully.
 func (dr *DurableRunner) Stop() {
-	close(dr.stopCh)
 	close(dr.taskCh)
 	dr.wg.Wait()
-	dr.cron.Stop()
 	dr.save()
 	log.Println("[DurableRunner] Stopped cleanly")
 }
 
-// AssignDurableRun queues a Function to run once, surviving crashes.
+// ── Assign ────────────────────────────────────────────────────────────────────
+
 func (dr *DurableRunner) AssignDurableRun(f Function) {
 	rec := &DurableRecord{
 		Func:    f,
@@ -107,44 +99,8 @@ func (dr *DurableRunner) AssignDurableRun(f Function) {
 	dr.taskCh <- rec
 }
 
-// AssignScheduled queues a Function to run on a cron schedule (e.g. "*/5 * * * *").
-// It will re-run on the schedule until the runner is stopped.
-func (dr *DurableRunner) AssignScheduled(f Function, cronExpr string) error {
-	rec := &DurableRecord{
-		Func:     f,
-		Status:   StatusScheduled,
-		Schedule: cronExpr,
-		AddedAt:  time.Now(),
-	}
-	dr.mu.Lock()
-	dr.records[f.SaveID] = rec
-	dr.mu.Unlock()
-	dr.save()
-
-	_, err := dr.cron.AddFunc(cronExpr, func() {
-		// Clone the record for each run so history is independent
-		run := &DurableRecord{
-			Func:     f,
-			Status:   StatusPending,
-			Schedule: cronExpr,
-			AddedAt:  time.Now(),
-		}
-		dr.mu.Lock()
-		dr.records[f.SaveID] = run
-		dr.mu.Unlock()
-		dr.taskCh <- run
-	})
-	if err != nil {
-		return fmt.Errorf("invalid cron expression %q: %w", cronExpr, err)
-	}
-
-	log.Printf("[DurableRunner] Scheduled function %d with cron: %s", f.SaveID, cronExpr)
-	return nil
-}
-
 // ── Status ────────────────────────────────────────────────────────────────────
 
-// Status returns the current state of a function by its SaveID.
 func (dr *DurableRunner) Status(id int) (DurableRecord, bool) {
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
@@ -155,7 +111,6 @@ func (dr *DurableRunner) Status(id int) (DurableRecord, bool) {
 	return *rec, true
 }
 
-// StatusAll returns a snapshot of every tracked function.
 func (dr *DurableRunner) StatusAll() []DurableRecord {
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
@@ -166,7 +121,6 @@ func (dr *DurableRunner) StatusAll() []DurableRecord {
 	return out
 }
 
-// CrashReport returns all records that crashed or failed.
 func (dr *DurableRunner) CrashReport() []DurableRecord {
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
@@ -179,7 +133,6 @@ func (dr *DurableRunner) CrashReport() []DurableRecord {
 	return out
 }
 
-// PrintCrashReport pretty-prints the crash report to stdout.
 func (dr *DurableRunner) PrintCrashReport() {
 	report := dr.CrashReport()
 	if len(report) == 0 {
@@ -192,6 +145,8 @@ func (dr *DurableRunner) PrintCrashReport() {
 			rec.Func.SaveID, rec.Func.Fun, rec.Status, rec.Error, rec.CrashLog)
 	}
 }
+
+// ── Worker ────────────────────────────────────────────────────────────────────
 
 func (dr *DurableRunner) worker(id int) {
 	defer dr.wg.Done()
@@ -215,7 +170,6 @@ func (dr *DurableRunner) execute(workerID int, rec *DurableRecord) {
 
 	log.Printf("[Worker %d] Running function %d (%s)", workerID, rec.Func.SaveID, rec.Func.Fun)
 
-	// Catch panics and log them as crash reports
 	var execErr error
 	func() {
 		defer func() {
@@ -235,17 +189,14 @@ func (dr *DurableRunner) execute(workerID int, rec *DurableRecord) {
 		rec.CrashLog = fmt.Sprintf("Worker %d caught at %s: %v", workerID, done.Format(time.RFC3339), execErr)
 		log.Printf("[Worker %d] Function %d FAILED: %v", workerID, rec.Func.SaveID, execErr)
 	} else {
-		// Only mark done and remove from persistence if it's a one-shot task
-		if rec.Schedule == "" {
-			rec.Status = StatusDone
-			log.Printf("[Worker %d] Function %d done", workerID, rec.Func.SaveID)
-		} else {
-			rec.Status = StatusScheduled
-		}
+		rec.Status = StatusDone
+		log.Printf("[Worker %d] Function %d done", workerID, rec.Func.SaveID)
 	}
 	dr.mu.Unlock()
 	dr.save()
 }
+
+// ── Persistence ───────────────────────────────────────────────────────────────
 
 type persistedStore struct {
 	Records map[int]*DurableRecord `json:"records"`
@@ -255,7 +206,7 @@ func (dr *DurableRunner) save() {
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
 
-	// Only persist non-done records so the file doesn't grow forever
+	// Only persist non-done records — done means finished, no need to track
 	toSave := make(map[int]*DurableRecord)
 	for id, rec := range dr.records {
 		if rec.Status != StatusDone {
@@ -277,7 +228,7 @@ func (dr *DurableRunner) load() {
 	data, err := os.ReadFile(dr.filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return // fresh start
+			return
 		}
 		log.Printf("[DurableRunner] load error: %v", err)
 		return
